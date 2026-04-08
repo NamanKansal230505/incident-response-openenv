@@ -1,0 +1,15 @@
+__pycache__
+*.pyc
+*.pyo
+.git
+.gitignore
+.env
+*.egg-info
+dist
+build
+.pytest_cache
+.venv
+venv
+node_modules
+*.md
+inference.py

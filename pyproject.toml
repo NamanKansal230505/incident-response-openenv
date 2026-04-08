@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openenv-incident-response"
+version = "0.1.0"
+description = "Cloud Incident Response Triage Environment for OpenEnv — train AI agents to diagnose and resolve production infrastructure incidents"
+requires-python = ">=3.10"
+dependencies = [
+    "openenv-core>=0.2.2",
+    "fastapi>=0.104.0",
+    "pydantic>=2.0",
+    "uvicorn>=0.24.0",
+    "requests>=2.25.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov", "httpx"]
+inference = ["openai>=1.0.0"]
+
+[project.scripts]
+server = "server.app:main"
+
+[tool.setuptools]
+packages = ["server"]
+py-modules = ["models", "client"]
