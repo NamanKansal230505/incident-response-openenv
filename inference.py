@@ -199,7 +199,7 @@ async def run_task(llm_client: OpenAI, task_info: dict) -> float:
                 break
 
         score = rewards[-1] if rewards else 0.0  # Final cumulative reward
-        score = min(max(score, 0.0), 1.0)
+        score = min(max(score, 0.01), 0.99)  # Strictly (0, 1)
         success = score >= 0.3
 
     finally:

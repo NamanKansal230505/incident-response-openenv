@@ -126,7 +126,7 @@ class IncidentResponseEnvironment(Environment):
             if command.startswith("resolve "):
                 self._state.step_count += 1
                 message, error, step_reward = self._cmd_resolve(command[8:])
-                self._cumulative_reward = max(0.0, min(1.0, self._cumulative_reward + step_reward))
+                self._cumulative_reward = self._clamp_score(self._cumulative_reward + step_reward)
                 self._step_rewards.append(step_reward)
                 self._state.score = self._cumulative_reward
                 return IncidentObservation(
@@ -156,7 +156,7 @@ class IncidentResponseEnvironment(Environment):
         # Check max steps
         if self._state.step_count >= self._scenario.max_steps:
             step_reward = self._calculate_step_penalty()
-            self._cumulative_reward = max(0.0, min(1.0, self._cumulative_reward + step_reward))
+            self._cumulative_reward = self._clamp_score(self._cumulative_reward + step_reward)
             self._step_rewards.append(step_reward)
             self._state.score = self._cumulative_reward
             return IncidentObservation(
@@ -172,7 +172,7 @@ class IncidentResponseEnvironment(Environment):
         # Parse and execute command
         message, error, step_reward = self._execute_command(command)
 
-        self._cumulative_reward = max(0.0, min(1.0, self._cumulative_reward + step_reward))
+        self._cumulative_reward = self._clamp_score(self._cumulative_reward + step_reward)
         self._step_rewards.append(step_reward)
         self._state.score = self._cumulative_reward
 
@@ -503,6 +503,12 @@ class IncidentResponseEnvironment(Environment):
                 f"Continue investigating.\n"
             )
             return msg, None, -0.05
+
+    # ---- Score clamping ----
+
+    def _clamp_score(self, score: float) -> float:
+        """Clamp score to strictly (0, 1) — never exactly 0.0 or 1.0."""
+        return max(0.01, min(0.99, score))
 
     # ---- Helpers ----
 
