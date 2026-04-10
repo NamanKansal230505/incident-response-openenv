@@ -239,9 +239,52 @@ diagnose *and* apply a matching `update_config` mutation.
 
 ### LLM baseline — `inference.py`
 
-The mandated OpenAI-client baseline that ships per hackathon spec. Uses
-`Qwen/Qwen2.5-72B-Instruct` via the Hugging Face router by default.
-Run against the same 8-task roster with the same STDOUT format.
+The mandated OpenAI-client baseline. Uses `Qwen/Qwen2.5-72B-Instruct`
+via the Hugging Face router by default. Measured end-to-end against a
+local Docker container (`aiops-triage:latest`) over WebSocket with the
+same 8-task roster and STDOUT format required by the hackathon spec:
+
+| Task | Type | Difficulty | Score | Steps |
+|------|------|------------|------:|------:|
+| `detection__aiops_pod_failure` | detection | easy | 0.99 | 4 |
+| `detection__itb_network_fault_checkout` | detection | easy | 0.99 | 5 |
+| `localization__aiops_network_loss` | localization | medium | 0.99 | 5 |
+| `localization__itb_resource_exhaustion_frontend` | localization | medium | 0.59 | 18 |
+| `analysis__aiops_recommendation_cache_failure` | analysis | medium | 0.30 | 20 |
+| `analysis__itb_network_fault_checkout` | analysis | medium | 0.99 | 6 |
+| `mitigation__aiops_misconfig_app_hotel_res` | mitigation | hard | 0.99 | 8 |
+| `mitigation__itb_checkout_error_rate` | mitigation | hard | 0.99 | 16 |
+| **Average** |  |  | **0.85** |  |
+
+Observations:
+
+- **Detection and most Localization/Mitigation tasks saturate at 0.99**
+  — Qwen2.5-72B can reason from the alert and logs to the correct
+  action, including non-trivial ones like finding
+  `db_connection_timeout_ms=0` and setting it to a positive value
+  (task 7, 8 steps) or flipping the `feature_flag_payment_v2` flag back
+  to `disabled` (task 8, 16 steps).
+- **Two tasks expose hard-case failure modes for the frontier model.**
+  On `localization__itb_resource_exhaustion_frontend` the model
+  investigates exhaustively but never commits `frontend` as the root
+  cause, timing out at 0.59. On
+  `analysis__aiops_recommendation_cache_failure` it checks every
+  user-facing service but never probes the shared `redis` backing
+  store, scoring 0.30. These are exactly the "hard task challenges
+  frontier models" cases the hackathon rubric asks for — the
+  environment leaves real headroom.
+- Compared to the heuristic baseline (0.77 avg), the LLM adds **0.08
+  average** and scores 0.99 on 4 more tasks, including both hard
+  Mitigation cases that the heuristic solves with ~0.5.
+
+Reproduce with:
+
+```bash
+export HF_TOKEN="..."
+export IMAGE_NAME="aiops-triage:latest"
+export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
+python inference.py
+```
 
 ## Setup
 
