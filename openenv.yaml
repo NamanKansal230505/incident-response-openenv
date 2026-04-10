@@ -1,5 +1,5 @@
 spec_version: 1
-name: incident_response
+name: aiops_triage
 type: space
 runtime: fastapi
 app: server.app:app

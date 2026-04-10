@@ -1,21 +1,22 @@
 """
-FastAPI application for the Cloud Incident Response Triage Environment.
+FastAPI application for the AIOps Triage Environment.
 """
 
 from openenv.core.env_server.http_server import create_app
 
-from models import IncidentAction, IncidentObservation
-from server.incident_environment import IncidentResponseEnvironment
+from models import AIOpsAction, AIOpsObservation
+from server.aiops_environment import AIOpsTriageEnvironment
 
 app = create_app(
-    env=IncidentResponseEnvironment,
-    action_cls=IncidentAction,
-    observation_cls=IncidentObservation,
-    env_name="incident_response",
+    env=AIOpsTriageEnvironment,
+    action_cls=AIOpsAction,
+    observation_cls=AIOpsObservation,
+    env_name="aiops_triage",
     max_concurrent_envs=1,
 )
 
-def main():
+
+def main() -> None:
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8000)

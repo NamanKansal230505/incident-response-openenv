@@ -3,9 +3,9 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "openenv-incident-response"
-version = "0.1.0"
-description = "Cloud Incident Response Triage Environment for OpenEnv — train AI agents to diagnose and resolve production infrastructure incidents"
+name = "openenv-aiops-triage"
+version = "0.2.0"
+description = "AIOps Triage Environment for OpenEnv — wraps Microsoft AIOpsLab and IBM ITBench benchmarks into a single uniform agent interface covering Detection, Localization, Analysis, and Mitigation tasks over simulated microservice clusters."
 requires-python = ">=3.10"
 dependencies = [
     "openenv-core>=0.2.2",
