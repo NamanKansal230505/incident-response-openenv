@@ -1,198 +1,222 @@
 ---
-title: AIOps Triage
+title: AIOps Triage Environment Server
 emoji: 🛰️
 colorFrom: indigo
 colorTo: red
 sdk: docker
+pinned: false
 app_port: 8000
+base_path: /docs
 tags:
   - openenv
-  - reinforcement-learning
   - aiops
   - sre
   - incident-response
-  - benchmark-wrapper
 ---
 
-# AIOps Triage — an OpenEnv wrapper over AIOpsLab and ITBench
+# AIOps Triage Environment
 
-An OpenEnv-compliant environment that lets AI agents practice the full
-AIOps pipeline — **Detection, Localization, Analysis, and Mitigation** —
-on a deterministic simulator of real-world Kubernetes microservice
-incidents drawn from two peer-reviewed SRE benchmarks.
+OpenEnv wrapper for two real-world SRE benchmarks — Microsoft Research
+[AIOpsLab](https://github.com/microsoft/AIOpsLab) and IBM
+[ITBench](https://github.com/IBM/itbench) — unified behind a single
+`reset / step / state` surface. Covers the four canonical AIOps task
+types defined by AIOpsLab (Detection, Localization, Analysis,
+Mitigation) across 15 faults and 4 microservice topologies.
 
-## Why this environment
+Both upstream benchmarks require a live Kubernetes cluster with helm
+and fault injection hooks, which does not fit in a single Hugging Face
+Space container. This environment ships a deterministic, seed-reproducible
+simulator of their problem corpora — the same strategy
+[`tbench2_env`](https://github.com/meta-pytorch/OpenEnv/tree/main/envs/tbench2_env)'s
+local mode uses to ship a Terminal-Bench-2 wrapper that runs without
+Docker-in-Docker.
 
-Large language model agents are increasingly pitched as autonomous
-SREs, yet the community's training targets are still ad-hoc toy
-scenarios. This environment directly answers that gap by wrapping two
-established benchmarks:
-
-- **[Microsoft Research AIOpsLab](https://github.com/microsoft/AIOpsLab)** —
-  "a holistic framework to enable the design, development, and
-  evaluation of autonomous AIOps agents" with a 31-problem corpus across
-  four canonical task types.
-- **[IBM ITBench](https://github.com/IBM/itbench)** — an open-source
-  benchmarking framework for IT automation with 6 SRE scenarios and 21
-  fault-injection mechanisms on Kubernetes.
-
-Both benchmarks require a live Kubernetes cluster with helm and fault
-injection hooks. That does not fit in a single Hugging Face Space Docker
-container. We ship a **deterministic lightweight simulator** of their
-problem corpora — the same strategy the `tbench2_env` reference
-environment uses to ship a Terminal-Bench-2 wrapper that runs without a
-full Docker runtime. The fault taxonomy, service topologies, and
-grading semantics are drawn directly from the upstream specs; see
-`server/fault_library.py` for the per-fault provenance citations.
-
-## What makes this different from a hand-authored incident env
-
-| Property                | Round 1 (hand-authored) | Round 2 (this env) |
-|-------------------------|-------------------------|--------------------|
-| Task count              | 3 fixed scenarios       | Unbounded, seed-reproducible |
-| Task types              | 1 (end-to-end mitigation) | 4 (Detection, Localization, Analysis, Mitigation) |
-| Grader                  | Keyword match on text   | State-based verifiers on simulator state |
-| Reward composition      | Ad-hoc formula          | RFC 004 Rubric (outcome + process + timeout) |
-| Source of truth         | Invented                | AIOpsLab + ITBench benchmark specs |
-| Scaling                 | Copy-paste per scenario | `ScenarioGenerator(seed, task_type, fault_id)` |
-
-## Task types
-
-Modeled directly on AIOpsLab's four AIOps task categories:
-
-| Type          | What the agent must do | Terminal action |
-|---------------|------------------------|-----------------|
-| Detection     | Decide whether the cluster is actually experiencing an incident | `finalize` with `{"anomaly": true\|false}` |
-| Localization  | Identify the single service that is the root cause | `finalize` with `{"component": "<service>"}` |
-| Analysis      | Identify the component **and** the fault class (application / resource / network / config / infrastructure) | `finalize` with `{"component": ..., "fault_class": ...}` |
-| Mitigation    | Apply a mutation action that actually fixes the underlying fault | `mutate` matching the fault's valid mitigation signature |
-
-Difficulty maps naturally to task type: Detection is easy (baseline),
-Localization and Analysis are medium (require targeted investigation),
-and Mitigation is hard (requires understanding *and* acting).
-
-## Action space
-
-The environment has three action classes (see `models.ActionType`):
-
-### `investigate` — read-only telemetry
+## Quick Start
 
 ```python
-AIOpsAction(action_type="investigate", command="check_logs",
-            args={"service": "reservation"})
+import asyncio
+from client import AIOpsTriageEnv
+from models import AIOpsAction, ActionType
+
+
+async def main():
+    async with AIOpsTriageEnv(base_url="http://localhost:8000") as env:
+        result = await env.reset(task="mitigation__aiops_misconfig_app_hotel_res")
+        print(result.observation.task_instruction)
+
+        result = await env.step(AIOpsAction(
+            action_type=ActionType.INVESTIGATE,
+            command="check_config",
+            args={"service": "reservation"},
+        ))
+        print(result.observation.telemetry)
+
+        result = await env.step(AIOpsAction(
+            action_type=ActionType.MUTATE,
+            command="update_config",
+            args={"service": "reservation",
+                  "key": "db_connection_timeout_ms",
+                  "value": "5000"},
+        ))
+        print(result.reward, result.done)
+
+
+asyncio.run(main())
 ```
 
-- `list_services`
-- `check_service`       — status, replicas, version
-- `check_logs`          — recent log lines
-- `check_metrics`       — CPU, memory, latency, error rate, RPS, plus fault-specific metrics
-- `check_config`        — service config dict
-- `check_dependencies`  — upstream and downstream edges
+## Building the Docker Image
 
-### `mutate` — state-changing operations
-
-```python
-AIOpsAction(action_type="mutate", command="update_config",
-            args={"service": "reservation", "key": "db_connection_timeout_ms",
-                  "value": "5000"})
+```bash
+docker build -t aiops-triage:latest .
+docker run --rm -p 8000:8000 aiops-triage:latest
+curl http://localhost:8000/health
 ```
 
-- `restart_service`     — reset pods
-- `scale_service`       — change replica count
-- `rollback_service`    — revert deployment version
-- `update_config`       — change a config key
+Health check response: `{"status":"healthy"}`
 
-### `finalize` — submit a terminal answer
+## Environment Details
 
-```python
-AIOpsAction(action_type="finalize", command="submit",
-            args={"answer": {"component": "reservation", "fault_class": "config"}})
-```
+### Action
 
-Required for Detection / Localization / Analysis tasks. Optional
-(root-cause documentation bonus) on Mitigation tasks.
+**AIOpsAction**: One step the agent takes against the simulated cluster.
 
-## Observation space
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `action_type` | str | `"investigate"` | Action class: `investigate`, `mutate`, or `finalize` |
+| `command` | str | — | Specific verb within the action type |
+| `args` | dict | `{}` | Command arguments as a keyword dict |
 
-`AIOpsObservation` returns a structured payload usable by both text LLMs
-and RL training pipelines:
+### Observation
+
+**AIOpsObservation**: Returned after each `step()`.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `message` | str | Human-readable feedback from the last action |
-| `telemetry` | dict | Structured data from the last investigate (logs list, metrics dict, config dict, etc) |
-| `task_type` | str | detection / localization / analysis / mitigation |
-| `task_instruction` | str | Full task prompt shown at reset |
-| `alert_summary` | str | Simulated monitoring alert |
+| `telemetry` | dict | Structured data from the last investigate (logs / metrics / config / dependencies) |
+| `task_type` | str | `detection` \| `localization` \| `analysis` \| `mitigation` |
+| `task_instruction` | str | Plain-English task prompt shown at reset |
+| `alert_summary` | str | Simulated monitoring alert for the incident |
 | `available_services` | list[str] | Services in the installed topology |
-| `step_number` / `max_steps` | int | Progress |
-| `reward` | float | Cumulative cumulative reward, strictly in (0, 1) |
+| `step_number` | int | Current step index |
+| `max_steps` | int | Episode step budget |
+| `reward` | float \| None | Cumulative reward, strictly in (0, 1) |
 | `done` | bool | Episode terminated |
 | `finalized` | bool | Agent has submitted a terminal answer |
-| `last_action_error` | str | Error if the action was rejected |
+| `last_action_error` | str \| None | Error if the action was rejected |
 
-## Reward — RFC 004 Rubric composition
+### State
 
-Rewards compose three signals (see `server/rubrics.py`):
+**AIOpsState**: Server-side state exposed via `/state`.
 
-- **Outcome** — applied at the terminal step by a task-type-specific
-  verifier that inspects real simulator state (Mitigation) or the
-  structured finalize payload (Detection / Localization / Analysis).
-  Mirrors `repl_env`'s `REPLRubric` and matches `tbench2_env`'s
-  pytest-based grading.
-- **Process** — applied every step from cheap heuristics: novel
-  topology-near investigations earn +0.04; redundant re-reads cost
-  -0.01; destructive mutations against the wrong service cost -0.08;
-  a correct mutation earns +0.25.
-- **Timeout penalty** — -0.20 if `max_steps` is exhausted.
-- **Clamping** — final score is strictly clamped to `(0.01, 0.99)`
-  per hackathon requirements. Scores never touch 0.0 or 1.0.
+| Field | Type | Description |
+|-------|------|-------------|
+| `task_type` | str | Current task type |
+| `task_id` | str | Composed scenario id `{fault}__{task_type}__{topology}__seed{N}` |
+| `source_benchmark` | str | `aiopslab` or `itbench` |
+| `scenario_seed` | int | Seed used to generate the scenario |
+| `difficulty` | str | `easy` \| `medium` \| `hard` |
+| `root_cause_id` | str | Ground-truth fault id (hidden from the agent) |
+| `finalized` | bool | Terminal answer submitted |
+| `mitigation_applied` | bool | A `mutate` action matched the fault's valid mitigations |
+| `actions_taken` | list[str] | Action log for the episode |
+| `score` | float | Current cumulative score |
 
-## Fault library
+## Action Types
 
-Fifteen faults ship in Round 2, each grounded in a specific upstream
-problem. Selected examples:
+| Type | Command | Args | Description |
+|------|---------|------|-------------|
+| `investigate` | `list_services` | `{}` | Enumerate services in the cluster |
+| `investigate` | `check_service` | `{"service": str}` | Status, replicas, version |
+| `investigate` | `check_logs` | `{"service": str}` | Recent log lines |
+| `investigate` | `check_metrics` | `{"service": str}` | CPU, memory, latency, error rate, RPS, fault-specific metrics |
+| `investigate` | `check_config` | `{"service": str}` | Service config dict |
+| `investigate` | `check_dependencies` | `{"service": str}` | Upstream and downstream edges |
+| `mutate` | `restart_service` | `{"service": str}` | Reset pods to their ready state |
+| `mutate` | `scale_service` | `{"service": str, "replicas": int}` | Change replica count |
+| `mutate` | `rollback_service` | `{"service": str}` | Revert deployment version |
+| `mutate` | `update_config` | `{"service": str, "key": str, "value": str}` | Change a config key |
+| `finalize` | `submit` | `{"answer": {...}}` | Submit terminal answer for Detection / Localization / Analysis, or document root cause on Mitigation |
+
+## Task Types
+
+Modeled directly on AIOpsLab's four AIOps task categories.
+
+| Task type | Agent goal | Terminal action | Difficulty |
+|-----------|------------|-----------------|-----------|
+| Detection | Decide whether the cluster is experiencing an incident | `finalize` with `{"anomaly": true\|false}` | easy |
+| Localization | Identify the single service that is the root cause | `finalize` with `{"component": "<service>"}` | medium |
+| Analysis | Identify the component **and** the fault class | `finalize` with `{"component": ..., "fault_class": ...}` | medium |
+| Mitigation | Apply a mutation action that actually fixes the underlying fault | `mutate` matching the fault's valid mitigation signature | hard |
+
+Valid `fault_class` values: `application`, `resource`, `network`,
+`config`, `infrastructure`.
+
+## Fault Library
+
+15 faults ship in the default library, each grounded in a specific
+upstream problem. Selected examples:
 
 | Fault ID | Source | Upstream problem | Category |
 |----------|--------|------------------|----------|
-| `aiops_pod_failure` | AIOpsLab | `pod_failure` | infrastructure |
-| `aiops_ad_service_failure` | AIOpsLab | `ad_service_failure` | application |
-| `aiops_cart_service_failure` | AIOpsLab | `cart_service_failure` | application |
-| `aiops_ad_service_high_cpu` | AIOpsLab | `ad_service_high_cpu` | resource |
-| `aiops_network_loss` | AIOpsLab | `network_loss` | network |
-| `aiops_network_delay` | AIOpsLab | `network_delay` | network |
-| `aiops_recommendation_cache_failure` | AIOpsLab | `recommendation_service_cache_failure` | config |
-| `aiops_k8s_target_port_misconfig` | AIOpsLab | `k8s_target_port_misconfig` | config |
-| `aiops_misconfig_app_hotel_res` | AIOpsLab | `misconfig_app_hotel_res` | config |
-| `aiops_auth_miss_mongodb` | AIOpsLab | `auth_miss_mongodb` | config |
-| `aiops_kafka_queue_problems` | AIOpsLab | `kafka_queue_problems` | infrastructure |
-| `aiops_loadgen_flood_homepage` | AIOpsLab | `loadgenerator_flood_homepage` | resource |
-| `itb_checkout_error_rate` | ITBench | "High error rate on service checkout" | application |
-| `itb_network_fault_checkout` | ITBench | network fault mechanism | network |
-| `itb_resource_exhaustion_frontend` | ITBench | resource exhaustion mechanism | resource |
+| `aiops_pod_failure` | aiopslab | `pod_failure` | infrastructure |
+| `aiops_ad_service_failure` | aiopslab | `ad_service_failure` | application |
+| `aiops_cart_service_failure` | aiopslab | `cart_service_failure` | application |
+| `aiops_ad_service_high_cpu` | aiopslab | `ad_service_high_cpu` | resource |
+| `aiops_network_loss` | aiopslab | `network_loss` | network |
+| `aiops_network_delay` | aiopslab | `network_delay` | network |
+| `aiops_recommendation_cache_failure` | aiopslab | `recommendation_service_cache_failure` | config |
+| `aiops_k8s_target_port_misconfig` | aiopslab | `k8s_target_port_misconfig` | config |
+| `aiops_misconfig_app_hotel_res` | aiopslab | `misconfig_app_hotel_res` | config |
+| `aiops_auth_miss_mongodb` | aiopslab | `auth_miss_mongodb` | config |
+| `aiops_kafka_queue_problems` | aiopslab | `kafka_queue_problems` | infrastructure |
+| `aiops_loadgen_flood_homepage` | aiopslab | `loadgenerator_flood_homepage` | resource |
+| `itb_checkout_error_rate` | itbench | "High error rate on service checkout" | application |
+| `itb_network_fault_checkout` | itbench | network fault mechanism | network |
+| `itb_resource_exhaustion_frontend` | itbench | resource exhaustion mechanism | resource |
 
-Each fault carries its upstream attribution and a machine-checkable
-`valid_mitigations` list that the Mitigation verifier uses for state
-comparison — no keyword matching, no authored success strings.
+Every fault carries its upstream attribution and a machine-checkable
+`valid_mitigations` list that the Mitigation verifier uses for
+programmatic state comparison — no keyword matching.
 
 ## Topologies
 
-Four microservice topologies are drawn from the upstream apps:
+| Topology | Source | Services | Description |
+|----------|--------|---------:|-------------|
+| `online-boutique` | aiopslab | 11 | Google's Online Boutique demo — target of many AIOpsLab `*_service_failure` problems |
+| `hotel-reservation` | aiopslab | 13 | DeathStarBench HotelReservation — AIOpsLab's flagship demo app |
+| `social-network` | aiopslab | 16 | DeathStarBench SocialNetwork |
+| `otel-astronomy-shop` | itbench | 16 | OpenTelemetry Astronomy Shop — ITBench's default k8s app |
 
-- **Online Boutique** (Google) — target of many AIOpsLab `*_service_failure` problems
-- **HotelReservation** (DeathStarBench) — AIOpsLab's flagship demo app
-- **SocialNetwork** (DeathStarBench) — AIOpsLab's social-network metadata
-- **OpenTelemetry Astronomy Shop** — ITBench's default checkout app
+Each topology encodes the upstream app's actual dependency graph, which
+feeds Localization/Analysis tasks and constrains which faults are
+applicable.
 
-Each topology encodes the actual dependency graph of the upstream app,
-which feeds the Localization/Analysis tasks and constrains which faults
-are applicable.
+## Reward
 
-## Default task roster
+Rewards follow an OpenEnv RFC 004-style rubric composition. The
+environment uses `IncidentRubric` by default, which combines:
+
+- **Outcome reward** (on terminal steps): applied by a task-type
+  verifier that inspects real simulator state (Mitigation) or the
+  structured finalize payload (Detection / Localization / Analysis).
+- **Process reward** (on non-terminal steps): +0.04 for novel
+  topology-near investigations, −0.01 for redundant re-reads, +0.25
+  for a correct mitigation match, −0.08 for destructive mutations on
+  the wrong service, −0.03 for invalid actions.
+- **Timeout penalty**: −0.20 if `max_steps` is exhausted.
+- **Clamping**: all scores are clamped strictly into `(0.01, 0.99)` per
+  hackathon spec — scores never touch 0.0 or 1.0.
+
+Custom rubrics can be injected by subclassing `IncidentRubric` and
+wiring a new instance in `server/aiops_environment.py`.
+
+## Default Task Roster
 
 The inference script runs this fixed roster so baseline runs are
-reproducible. The environment also accepts arbitrary
-`(task_type, fault_id, seed)` combinations via `reset(task=..., seed=...)`.
+reproducible. `reset(task="...", seed=N)` also accepts arbitrary
+`{task_type}__{fault_id}` compositions, and the bare
+`{task_type}` form resolves to the first matching roster entry.
 
 | # | Task ID | Type | Source | Difficulty |
 |---|---------|------|--------|-----------|
@@ -205,17 +229,15 @@ reproducible. The environment also accepts arbitrary
 | 7 | `mitigation__aiops_misconfig_app_hotel_res` | mitigation | aiopslab | hard |
 | 8 | `mitigation__itb_checkout_error_rate` | mitigation | itbench | hard |
 
-## Baseline scores
+## Baselines
 
-Two reproducible baselines ship with this environment:
+Two reproducible baselines ship with the environment.
 
 ### Heuristic baseline (no LLM) — `baseline_smoke.py`
 
-A deterministic rule-based agent that reads the alert, investigates the
-most-obvious service, and submits a best-effort answer. This is the
-"junior SRE glancing at the alert" baseline — intentionally weak so the
-environment's difficulty gradient is visible. Measured on the default
-roster against the containerized server:
+Deterministic rule-based agent that reads the alert, investigates the
+obvious service, and submits a best-effort answer. Intentionally weak so
+the environment's difficulty gradient is visible.
 
 | Task | Type | Difficulty | Score |
 |------|------|------------|------:|
@@ -227,22 +249,12 @@ roster against the containerized server:
 | `analysis__itb_network_fault_checkout` | analysis | medium | 0.73 |
 | `mitigation__aiops_misconfig_app_hotel_res` | mitigation | hard | 0.58 |
 | `mitigation__itb_checkout_error_rate` | mitigation | hard | 0.50 |
-| **Average** |  |  | **0.77** |
-
-The Detection tier saturates (anomaly is always present by construction).
-Localization and Analysis partially decay because the alerts are
-intentionally **symptom-level** — they report what operators see on the
-frontend, not the root cause, so agents must trace the dependency graph
-upstream. Mitigation decays the most because `restart_service` cannot
-fix configuration bugs or feature-flag regressions; the agent must
-diagnose *and* apply a matching `update_config` mutation.
+| **Average** | | | **0.77** |
 
 ### LLM baseline — `inference.py`
 
-The mandated OpenAI-client baseline. Uses `Qwen/Qwen2.5-72B-Instruct`
-via the Hugging Face router by default. Measured end-to-end against a
-local Docker container (`aiops-triage:latest`) over WebSocket with the
-same 8-task roster and STDOUT format required by the hackathon spec:
+OpenAI-client baseline per hackathon spec. Uses
+`Qwen/Qwen2.5-72B-Instruct` via the Hugging Face router by default.
 
 | Task | Type | Difficulty | Score | Steps |
 |------|------|------------|------:|------:|
@@ -254,143 +266,106 @@ same 8-task roster and STDOUT format required by the hackathon spec:
 | `analysis__itb_network_fault_checkout` | analysis | medium | 0.99 | 6 |
 | `mitigation__aiops_misconfig_app_hotel_res` | mitigation | hard | 0.99 | 8 |
 | `mitigation__itb_checkout_error_rate` | mitigation | hard | 0.99 | 16 |
-| **Average** |  |  | **0.85** |  |
+| **Average** | | | **0.85** | |
 
-Observations:
+Hard-case failures for the frontier model:
 
-- **Detection and most Localization/Mitigation tasks saturate at 0.99**
-  — Qwen2.5-72B can reason from the alert and logs to the correct
-  action, including non-trivial ones like finding
-  `db_connection_timeout_ms=0` and setting it to a positive value
-  (task 7, 8 steps) or flipping the `feature_flag_payment_v2` flag back
-  to `disabled` (task 8, 16 steps).
-- **Two tasks expose hard-case failure modes for the frontier model.**
-  On `localization__itb_resource_exhaustion_frontend` the model
+- `localization__itb_resource_exhaustion_frontend`: Qwen2.5-72B
   investigates exhaustively but never commits `frontend` as the root
-  cause, timing out at 0.59. On
-  `analysis__aiops_recommendation_cache_failure` it checks every
-  user-facing service but never probes the shared `redis` backing
-  store, scoring 0.30. These are exactly the "hard task challenges
-  frontier models" cases the hackathon rubric asks for — the
-  environment leaves real headroom.
-- Compared to the heuristic baseline (0.77 avg), the LLM adds **0.08
-  average** and scores 0.99 on 4 more tasks, including both hard
-  Mitigation cases that the heuristic solves with ~0.5.
+  cause, timing out at 0.59.
+- `analysis__aiops_recommendation_cache_failure`: the model checks every
+  user-facing service but never probes the shared `redis` backing store,
+  scoring 0.30.
 
-Reproduce with:
+Both Mitigation tasks reach 0.99 — the model correctly finds
+`db_connection_timeout_ms=0` and applies a positive fix, and flips the
+`feature_flag_payment_v2` flag back to `disabled`.
 
-```bash
-export HF_TOKEN="..."
-export IMAGE_NAME="aiops-triage:latest"
-export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
-python inference.py
-```
-
-## Setup
-
-### Local development
+## Running the Server
 
 ```bash
+# Install dependencies (local dev)
 pip install -e ".[dev,inference]"
-uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
+
+# Run the server
+uvicorn server.app:app --host 0.0.0.0 --port 8000
+
+# Or via the entry point declared in pyproject.toml
+server
 ```
 
-### Docker
+## Running the Baselines
+
+Heuristic baseline:
 
 ```bash
-docker build -t aiops-triage:latest .
-docker run -d -p 8000:8000 aiops-triage:latest
-curl http://localhost:8000/health
+docker run -d --name aiops -p 8000:8000 aiops-triage:latest
+AIOPS_URL=http://127.0.0.1:8000 python baseline_smoke.py
 ```
 
-### Run the baseline inference
+LLM baseline:
 
 ```bash
-export HF_TOKEN="..."                # or API_KEY
+export HF_TOKEN="..."                    # or API_KEY
+export API_BASE_URL="https://router.huggingface.co/v1"
 export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
 export IMAGE_NAME="aiops-triage:latest"
 python inference.py
 ```
 
-### Using the Python client
+## Environment Variables
 
-```python
-import asyncio
-from client import AIOpsTriageEnv
-from models import ActionType, AIOpsAction
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HF_TOKEN` | — | API key for the OpenAI-compatible LLM endpoint (inference baseline) |
+| `API_KEY` | — | Fallback for `HF_TOKEN` |
+| `API_BASE_URL` | `https://router.huggingface.co/v1` | OpenAI-compatible LLM endpoint |
+| `MODEL_NAME` | `Qwen/Qwen2.5-72B-Instruct` | Model identifier for the inference baseline |
+| `IMAGE_NAME` | `aiops-triage:latest` | Local Docker image tag used by `inference.py` |
+| `AIOPS_URL` | `http://127.0.0.1:8000` | Target URL used by `baseline_smoke.py` |
+| `ENABLE_WEB_INTERFACE` | `true` | Enable the Gradio web UI mounted at `/web` |
 
-async def main():
-    env = await AIOpsTriageEnv.from_docker_image("aiops-triage:latest")
-    result = await env.reset(task="mitigation__aiops_misconfig_app_hotel_res")
-    print(result.observation.task_instruction)
+## OpenEnv Spec Compliance
 
-    result = await env.step(AIOpsAction(
-        action_type=ActionType.INVESTIGATE,
-        command="check_config",
-        args={"service": "reservation"},
-    ))
-    print(result.observation.telemetry)
+- Pydantic models inheriting from `openenv.core.env_server.types.Action`,
+  `Observation`, and `State`.
+- `server/app.py` uses `openenv.core.env_server.http_server.create_app`.
+- `pyproject.toml` declares `server = "server.app:main"` as the entry
+  point.
+- `openenv.yaml` matches the manifest format used by the reference envs.
+- `uv.lock` is shipped for `openenv validate`.
+- Scores are strictly within `(0.01, 0.99)`.
+- `openenv validate .` → `[OK] Ready for multi-mode deployment` across
+  docker / openenv_serve / uv_run / python_module.
 
-    result = await env.step(AIOpsAction(
-        action_type=ActionType.MUTATE,
-        command="update_config",
-        args={"service": "reservation",
-              "key": "db_connection_timeout_ms",
-              "value": "5000"},
-    ))
-    print(result.reward, result.done)
-
-asyncio.run(main())
-```
-
-## Project layout
+## Project Structure
 
 ```
 aiops_triage/
-├── models.py                      AIOpsAction / AIOpsObservation / AIOpsState
-├── client.py                      AIOpsTriageEnv (EnvClient)
-├── inference.py                   Baseline OpenAI-client loop across 8 tasks
-├── openenv.yaml                   Spec manifest
-├── pyproject.toml                 Dependencies + `server = "server.app:main"`
-├── Dockerfile                     python:3.11-slim + openenv-core
-├── uv.lock                        Required by `openenv validate`
-├── README.md                      This file
+├── __init__.py                     # Module exports
+├── README.md                       # This file
+├── Dockerfile                      # Container image definition
+├── openenv.yaml                    # OpenEnv manifest
+├── pyproject.toml                  # Package dependencies
+├── uv.lock                         # Pinned dependency graph (required by openenv validate)
+├── models.py                       # AIOpsAction / AIOpsObservation / AIOpsState
+├── client.py                       # AIOpsTriageEnv (EnvClient)
+├── inference.py                    # Baseline OpenAI-client loop across the 8-task roster
+├── baseline_smoke.py               # Deterministic no-LLM heuristic baseline
 └── server/
-    ├── app.py                     FastAPI app via create_app()
-    ├── aiops_environment.py       Core reset/step/state logic
-    ├── simulator.py               ClusterSimulator + 4 topology templates
-    ├── fault_library.py           15 faults with upstream provenance
-    ├── scenario_generator.py      ScenarioGenerator(seed, task_type, fault_id)
-    ├── verifiers.py               State-based graders per task type
-    └── rubrics.py                 IncidentRubric (RFC 004-style)
+    ├── __init__.py
+    ├── app.py                      # FastAPI application
+    ├── aiops_environment.py        # Core reset/step/state logic
+    ├── simulator.py                # ClusterSimulator + 4 topology templates
+    ├── fault_library.py            # 15 faults with upstream provenance citations
+    ├── scenario_generator.py       # Procedural ScenarioGenerator(seed, task_type, fault_id)
+    ├── verifiers.py                # State-based graders per task type
+    └── rubrics.py                  # IncidentRubric (RFC 004-style)
 ```
-
-## Scoring properties
-
-- Deterministic: `seed=N` always produces the same topology, overlay,
-  and grading for a given `task_type`/`fault_id`.
-- Partial credit: incorrect localization answers that name a real
-  in-topology service still earn 0.25 vs. 0.05 for nonsense.
-- No reward hacking via text matching: Mitigation tasks require a
-  programmatic mutation signature that targets the root-cause service
-  with the right parameters.
-- Strictly in (0, 1): scores are clamped to `[0.01, 0.99]` per hackathon
-  spec.
-
-## OpenEnv spec compliance
-
-- Pydantic models inherit from `openenv.core.env_server.types.Action`,
-  `Observation`, and `State`.
-- `server/app.py` exposes `app` via `openenv.core.env_server.http_server.create_app`.
-- `pyproject.toml` declares `server = "server.app:main"` as the
-  entry point.
-- `openenv.yaml` matches the manifest format used by the reference envs.
-- `uv.lock` is shipped for `openenv validate`.
-- Scores are strictly within `(0, 1)` — never 0.0 or 1.0.
 
 ## References
 
-- Microsoft Research AIOpsLab: https://github.com/microsoft/AIOpsLab
-- IBM ITBench: https://github.com/IBM/itbench
-- IBM ITBench Scenarios: https://github.com/itbench-hub/ITBench-Scenarios
-- OpenEnv reference environments: https://github.com/meta-pytorch/OpenEnv/tree/main/envs
+- Microsoft Research AIOpsLab — https://github.com/microsoft/AIOpsLab
+- IBM ITBench — https://github.com/IBM/itbench
+- IBM ITBench Scenarios — https://github.com/itbench-hub/ITBench-Scenarios
+- OpenEnv reference environments — https://github.com/meta-pytorch/OpenEnv/tree/main/envs
